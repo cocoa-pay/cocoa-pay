@@ -46,6 +46,11 @@ export interface SubsidyStep {
   date?: string;
 }
 
+export interface LinkItem {
+  name: string;
+  url: string;
+}
+
 export interface Subsidy {
   id: string;
   title: string;
@@ -61,11 +66,19 @@ export interface Subsidy {
   
   // Detailed Info Fields (Loaded on demand)
   isDetailFetched?: boolean;
+  purpose?: string; // wlfareInfoOutlCn (사업목적/개요)
+  competentOrg?: string; // jurMnofNm (담당부서)
   supportContent?: string; // alwServCn (급여/지원내용)
   selectionCriteria?: string; // slctCritCn (선정기준)
   targetDetail?: string; // tgtrDtlCn (대상상세)
-  contactInfo?: string; // inqplCtadrList (문의처)
+  contactInfo?: string; // inqplCtadrList (문의처 - Simple Summary)
   url?: string; // servDtlLink (상세링크)
+
+  // Detailed Lists
+  contacts?: LinkItem[]; // 전화문의
+  relatedWebsites?: LinkItem[]; // 관련 웹사이트
+  legalBases?: LinkItem[]; // 근거법령
+  referenceFiles?: LinkItem[]; // 서식/자료
 }
 
 export type SubsidySource = 'Central' | 'Local';

@@ -1,6 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { MessageCircle, X, Send, Bot } from 'lucide-react';
+import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
 
 interface Message {
   id: number;
@@ -16,53 +17,79 @@ const AIChat: React.FC = () => {
   ]);
   const [isThinking, setIsThinking] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [chatSession, setChatSession] = useState<Chat | null>(null);
+
+  // Initialize Gemini Chat
+  useEffect(() => {
+    const initChat = async () => {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const chat = ai.chats.create({
+          model: 'gemini-2.5-flash',
+          config: {
+            systemInstruction: '당신은 "코코아페이(Kokoapay)"의 AI 상담원입니다. 코코아페이는 숨겨진 정부 보조금과 복지 혜택을 찾아주는 서비스입니다. 사용자의 질문에 친절하고 명확하게 한국어로 답변하세요. 정부 지원금, 복지 정책, 신청 방법 등에 대한 정보를 알기 쉽게 설명해 주세요. 만약 앱의 기능적인 질문(예: 트래픽 오류, 데이터 조회 등)이 나오면, 공공데이터포털 API의 일일 트래픽 제한(100회)이나 Mock 데이터 모드에 대해 설명해 줄 수 있습니다.',
+          }
+        });
+        setChatSession(chat);
+      } catch (error) {
+        console.error("Failed to initialize AI chat", error);
+      }
+    };
+    initChat();
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isOpen]);
+  }, [messages, isOpen, isThinking]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
     
     const userMsg = { id: Date.now(), text: input, isUser: true };
     setMessages(prev => [...prev, userMsg]);
-    const currentInput = input; // Capture for closure logic
+    const currentInput = input;
     setInput('');
     setIsThinking(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      setIsThinking(false);
-      
-      let responseText = "";
-      const lowerInput = currentInput.toLowerCase();
+    try {
+      if (chatSession) {
+        // Streaming response for better UX
+        const result = await chatSession.sendMessageStream({ message: currentInput });
+        
+        let fullText = "";
+        // Create a placeholder message for the AI response
+        const aiMsgId = Date.now() + 1;
+        setMessages(prev => [...prev, { id: aiMsgId, text: "", isUser: false }]);
+        setIsThinking(false); // Stop thinking animation as we start streaming
 
-      // Keyword matching logic
-      if (lowerInput.includes('실제') || lowerInput.includes('가짜') || lowerInput.includes('mock') || lowerInput.includes('맞아')) {
-        responseText = "네, 예리하시네요! 🕵️\n\n현재 보시는 데이터는 앱의 기능을 보여드리기 위한 **가상 데이터(Mock Data)**입니다.\n\n실제 서비스 단계에서는 '정부24' 및 '복지로'의 공공 API와 실시간으로 연동되어, 고객님께 딱 맞는 정확한 정보를 제공하게 됩니다.";
-      } else if (lowerInput.includes('트래픽') || lowerInput.includes('traffic') || lowerInput.includes('호출') || lowerInput.includes('제한') || lowerInput.includes('안돼')) {
-        responseText = "🚦 **트래픽(Traffic)이란?**\n\nAPI를 통해 데이터를 주고받을 수 있는 '일일 허용 량'을 의미합니다.\n\n현재 사용 중인 공공데이터포털 개발 계정은 **하루 100회**의 호출로 제한되어 있습니다. 조회 버튼을 누를 때마다 중앙부처/지자체 API를 각각 호출하므로 트래픽이 소모됩니다.\n\n⚠️ **검색이 안 되나요?**\n오늘의 허용 트래픽을 모두 소진했을 가능성이 높습니다. 내일 다시 시도하시거나, API 키를 발급받아 설정에서 등록해주시면 계속 이용 가능합니다!";
-      } else if (lowerInput.includes('100개') || lowerInput.includes('더') || lowerInput.includes('전체') || lowerInput.includes('페이지')) {
-        responseText = "📊 **데이터 조회 안내**\n\n효율적인 트래픽 관리를 위해 한 번에 **최대 100건**의 데이터를 가져오도록 설정되어 있습니다.\n\n100개씩 계속 불러오는 기능도 기술적으로는 가능하지만, 개발 계정의 트래픽 제한(일 100회)으로 인해 금방 차단될 수 있어 현재는 막아두었습니다.\n\n대신 **페이지네이션** 기능을 통해 가져온 100개의 데이터를 편하게 보실 수 있도록 제공하고 있습니다! 😊";
+        for await (const chunk of result) {
+          const c = chunk as GenerateContentResponse;
+          const text = c.text;
+          if (text) {
+            fullText += text;
+            setMessages(prev => 
+              prev.map(msg => msg.id === aiMsgId ? { ...msg, text: fullText } : msg)
+            );
+          }
+        }
       } else {
-        const responses = [
-          "말씀하신 조건이라면 '청년내일채움공제'도 함께 알아보시는 게 좋겠어요!",
-          "해당 지원금은 예산 소진 시 조기 마감될 수 있으니 서두르시는 게 좋습니다.",
-          "소득 서류는 정부24에서 '소득금액증명원'을 발급받으시면 됩니다.",
-          "네, 중복 신청 가능한지 확인해드릴게요. 잠시만요...",
-          "더 궁금한 점이 있으시면 언제든 물어봐주세요!",
-          "현재 고객님의 프로필에 최적화된 플랜을 분석 중입니다.",
-          "트래픽 제한이나 API 관련 궁금한 점이 있으시면 '트래픽'이라고 물어봐주세요!"
-        ];
-        responseText = responses[Math.floor(Math.random() * responses.length)];
+        // Fallback if chat session isn't ready
+        setIsThinking(false);
+        setMessages(prev => [...prev, { 
+          id: Date.now() + 1, 
+          text: "죄송합니다. AI 연결에 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.", 
+          isUser: false 
+        }]);
       }
-      
+    } catch (error) {
+      console.error("Chat Error:", error);
+      setIsThinking(false);
       setMessages(prev => [...prev, { 
         id: Date.now() + 1, 
-        text: responseText, 
+        text: "오류가 발생했습니다. 다시 시도해 주세요.", 
         isUser: false 
       }]);
-    }, 1000);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -88,7 +115,7 @@ const AIChat: React.FC = () => {
             <div className="w-8 h-8 bg-kakao-yellow rounded-full flex items-center justify-center mr-3">
               <Bot className="w-5 h-5 text-kakao-brown" />
             </div>
-            <span className="font-bold">Cocoa AI 코파일럿</span>
+            <span className="font-bold">Kokoa AI 코파일럿</span>
           </div>
           <button onClick={() => setIsOpen(false)} className="text-gray-300 hover:text-white">
             <X className="w-5 h-5" />
@@ -128,11 +155,12 @@ const AIChat: React.FC = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="궁금한 점을 물어보세요... (예: 트래픽이 뭔가요?)" 
+              placeholder="궁금한 점을 물어보세요..." 
               className="flex-1 bg-transparent focus:outline-none text-sm"
             />
             <button 
               onClick={handleSend}
+              disabled={isThinking}
               className={`ml-2 p-1.5 rounded-full transition-colors ${input.trim() ? 'bg-kakao-yellow text-kakao-brown' : 'bg-gray-300 text-white'}`}
             >
               <Send className="w-4 h-4" />

@@ -32,19 +32,16 @@ const Dashboard: React.FC<DashboardProps> = ({
   // Reset to page 1 when filters change or data changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedSources, subsidies]);
+  }, [selectedSources, subsidies, profile.interests]);
   
   const matchedSubsidies = useMemo(() => {
-    if (isRealData) return subsidies;
-
-    // Mock filtering logic
+    // Unified filtering logic for both Mock and Real data
     return subsidies.filter(s => 
       (profile.interests.length === 0 || profile.interests.includes(s.category)) &&
-      s.matchRate > 50 &&
       ((s.provider === 'Central' && selectedSources.includes('Central')) ||
        (s.provider === 'Local' && selectedSources.includes('Local')))
     ).sort((a, b) => b.matchRate - a.matchRate);
-  }, [subsidies, profile, isRealData, selectedSources]);
+  }, [subsidies, profile, selectedSources]);
 
   const chartData = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -113,7 +110,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         
         {/* Stats Chart - Shows Global Stats */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 md:col-span-1 flex flex-col items-center justify-center h-fit sticky top-20">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 md:col-span-1 flex flex-col items-center justify-center h-fit md:sticky md:top-20">
           <h3 className="text-sm font-semibold text-gray-500 mb-4 w-full text-left">분야별 혜택 분포 (전체)</h3>
           <div className="w-full h-40">
             <ResponsiveContainer width="100%" height="100%">
@@ -149,30 +146,47 @@ const Dashboard: React.FC<DashboardProps> = ({
         <div className="md:col-span-2 space-y-4">
            
            {/* Filter Controls */}
-           <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-             <div className="flex items-center text-kakao-brown font-bold">
-                <Filter className="w-5 h-5 mr-2 text-kakao-yellow" />
-                <span>조회 대상</span>
+           <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm space-y-4">
+             {/* Row 1: Source Selection */}
+             <div className="flex justify-between items-center">
+                <div className="flex items-center text-kakao-brown font-bold">
+                    <Filter className="w-5 h-5 mr-2 text-kakao-yellow" />
+                    <span>조회 필터</span>
+                </div>
+                <div className="flex space-x-4">
+                  <label className="flex items-center cursor-pointer select-none hover:bg-gray-50 px-2 py-1 rounded-lg transition-colors">
+                    <input 
+                        type="checkbox" 
+                        checked={selectedSources.includes('Central')} 
+                        onChange={() => onToggleSource('Central')}
+                        className="w-4 h-4 text-kakao-yellow rounded focus:ring-kakao-yellow mr-2" 
+                    />
+                    <span className={`text-sm ${selectedSources.includes('Central') ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>중앙부처</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer select-none hover:bg-gray-50 px-2 py-1 rounded-lg transition-colors">
+                    <input 
+                        type="checkbox" 
+                        checked={selectedSources.includes('Local')} 
+                        onChange={() => onToggleSource('Local')}
+                        className="w-4 h-4 text-kakao-yellow rounded focus:ring-kakao-yellow mr-2" 
+                    />
+                    <span className={`text-sm ${selectedSources.includes('Local') ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>지자체</span>
+                  </label>
+                </div>
              </div>
-             <div className="flex space-x-4">
-               <label className="flex items-center cursor-pointer select-none">
-                 <input 
-                    type="checkbox" 
-                    checked={selectedSources.includes('Central')} 
-                    onChange={() => onToggleSource('Central')}
-                    className="w-5 h-5 text-kakao-yellow rounded focus:ring-kakao-yellow mr-2" 
-                 />
-                 <span className={`text-sm ${selectedSources.includes('Central') ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>중앙부처</span>
-               </label>
-               <label className="flex items-center cursor-pointer select-none">
-                 <input 
-                    type="checkbox" 
-                    checked={selectedSources.includes('Local')} 
-                    onChange={() => onToggleSource('Local')}
-                    className="w-5 h-5 text-kakao-yellow rounded focus:ring-kakao-yellow mr-2" 
-                 />
-                 <span className={`text-sm ${selectedSources.includes('Local') ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>지자체</span>
-               </label>
+
+             {/* Row 2: Active Interest Tags */}
+             <div className="flex items-start pt-3 border-t border-gray-100">
+                <span className="text-xs font-bold text-gray-500 mt-1.5 mr-3 shrink-0">선택한 관심분야</span>
+                <div className="flex flex-wrap gap-2">
+                    {profile.interests.length > 0 ? profile.interests.map(tag => (
+                        <span key={tag} className="px-2.5 py-1 bg-kakao-yellow/20 text-kakao-brown text-xs rounded-full font-medium border border-kakao-yellow/10">
+                            {tag}
+                        </span>
+                    )) : (
+                        <span className="text-xs text-gray-400 mt-1.5">전체 보기</span>
+                    )}
+                </div>
              </div>
            </div>
 

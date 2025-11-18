@@ -1,17 +1,42 @@
 
-import { Subsidy, InterestTag, SubsidySource } from './types';
+import { Subsidy, InterestTag, SubsidySource, SubsidyStep, UserProfile } from './types';
+import { GoogleGenAI } from "@google/genai";
 
 // API Base URLs
 const CENTRAL_BASE_URL = 'https://apis.data.go.kr/B554287/NationalWelfareInformationsV001';
 const LOCAL_BASE_URL = 'https://apis.data.go.kr/B554287/LocalGovernmentWelfareInformations';
 
-// XML Helper to safely get text content
-const getTagValue = (parent: Element | Document, tagName: string): string => {
-  const collection = parent.getElementsByTagName(tagName);
-  if (collection.length > 0) {
-    return collection[0].textContent?.trim() || '';
+// XML Helper to safely get text content from multiple potential tag names
+const getTagValue = (parent: Element | Document, tagName: string | string[]): string => {
+  const tags = Array.isArray(tagName) ? tagName : [tagName];
+  for (const tag of tags) {
+    const collection = parent.getElementsByTagName(tag);
+    if (collection.length > 0 && collection[0].textContent) {
+      return collection[0].textContent.trim();
+    }
   }
   return '';
+};
+
+// Helper to extract lists of similar objects from XML
+const getListValues = (parent: Element, tagName: string, nameKeys: string[], valKeys: string[]) => {
+    const nodes = parent.getElementsByTagName(tagName);
+    const list: {name: string, url: string}[] = [];
+    Array.from(nodes).forEach(node => {
+        let name = '';
+        for (const k of nameKeys) {
+            const val = getTagValue(node, k);
+            if (val) { name = val; break; }
+        }
+
+        let val = '';
+        for (const k of valKeys) {
+            const v = getTagValue(node, k);
+            if (v) { val = v; break; }
+        }
+        if (name || val) list.push({ name, url: val });
+    });
+    return list;
 };
 
 // Helper to clean HTML-like content from XML response
@@ -41,20 +66,146 @@ const mapCategoryFromXml = (title: string, digest: string, lifeArray: string): I
   return InterestTag.TAX;
 };
 
+const mapStepTitle = (rawName: string): string => {
+    if (rawName.includes('신청')) return '신청 접수';
+    if (rawName.includes('조사')) return '자격 조사';
+    if (rawName.includes('결정')) return '대상자 선정';
+    if (rawName.includes('이의')) return '이의 신청';
+    if (rawName.includes('지급') || rawName.includes('제공')) return '서비스 지급';
+    return rawName.replace('기관연락처목록', '').replace('목록', '') || '절차';
+};
+
+// --- Mapping Logic for API Request Codes ---
+
+// Map User Age to lifeArray Code
+const getLifeArrayCode = (age: number, hasChildren: boolean): string => {
+    const codes: string[] = [];
+    
+    if (age >= 0 && age <= 5) codes.push('001');   // 영유아
+    if (age >= 6 && age <= 12) codes.push('002');  // 아동
+    if (age >= 13 && age <= 18) codes.push('003'); // 청소년
+    if (age >= 19 && age <= 34) codes.push('004'); // 청년
+    if (age >= 35 && age <= 64) codes.push('005'); // 중장년
+    if (age >= 65) codes.push('006');              // 노년
+
+    if (hasChildren) {
+        codes.push('001'); // 영유아
+        codes.push('002'); // 아동
+        codes.push('007'); // 임신/출산
+    }
+
+    return [...new Set(codes)].join(',');
+};
+
+// Map User Interests to intrsThemaArray Code
+const getInterestCodes = (interests: InterestTag[]): string => {
+    const codeMap: Partial<Record<InterestTag, string[]>> = {
+        [InterestTag.HOUSING]: ['040'],            // 주거
+        [InterestTag.MEDICAL]: ['010', '020'],     // 신체건강, 정신건강
+        [InterestTag.EDUCATION]: ['100'],          // 교육
+        [InterestTag.CHILD_CARE]: ['090', '080', '120'], // 보육, 임신/출산, 보호/돌봄
+        [InterestTag.OLD_AGE]: ['030', '120'],     // 생활지원, 보호/돌봄
+        [InterestTag.YOUTH]: ['050'],              // 일자리 (청년 관련 다수 포함)
+        [InterestTag.TAX]: ['130', '140'],         // 서민금융, 법률
+        [InterestTag.LOAN]: ['130']                // 서민금융
+    };
+
+    const codes: string[] = [];
+    interests.forEach(tag => {
+        if (codeMap[tag]) {
+            codes.push(...(codeMap[tag] as string[]));
+        }
+    });
+
+    return [...new Set(codes)].join(',');
+};
+
+// AI Filtering Logic for Local Subsidies
+const filterLocalSubsidiesByRegion = async (subsidies: Subsidy[], region: string, apiKey: string): Promise<Subsidy[]> => {
+  if (subsidies.length === 0) return [];
+  
+  try {
+    console.log(`[AI Filter] Starting analysis for region: ${region}, items: ${subsidies.length}`);
+    const ai = new GoogleGenAI({ apiKey });
+    
+    // Prepare batch prompt
+    const listText = subsidies.map(s => `ID: ${s.id} | Title: ${s.title}`).join('\n');
+    
+    const prompt = `
+      Task: Identify which of the following Korean local government subsidies are valid for a resident of "${region}".
+      
+      Rules:
+      1. "Local" subsidies are often specific to a Province (e.g. Gyeonggi) or a City/District (e.g. Suwon-si).
+      2. If the subsidy title implies a specific region (e.g. "Incheon Youth Support"), match it against the user's region ("${region}").
+      3. If the subsidy is for a specific district (e.g. "Gangnam-gu"), it is valid if the user's region is the parent city (e.g. "Seoul").
+         - Example Mappings (Logic, not exhaustive):
+         - Gangnam-gu, Seocho-gu, Songpa-gu -> Seoul
+         - Haeundae-gu, Busanjin-gu -> Busan
+         - Bundang-gu, Suwon-si, Yongin-si -> Gyeonggi
+         - Eumseong-gun, Cheongju-si -> Chungbuk
+      4. If the title does not specify a region or implies the user's region, include it.
+      5. If the title specifies a DIFFERENT top-level region (e.g. User is Seoul, subsidy is "Busan..."), EXCLUDE it.
+      
+      Input List:
+      ${listText}
+      
+      Output:
+      Return a JSON array of STRINGS containing ONLY the valid IDs. 
+      Example: ["123", "456"]
+      Do not output markdown code blocks. Just the JSON string.
+    `;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+          responseMimeType: 'application/json'
+      }
+    });
+
+    const text = response.text;
+    // Robust cleanup of JSON string just in case
+    const jsonStr = text?.replace(/```json|```/g, '').trim();
+    const validIds: string[] = JSON.parse(jsonStr || '[]');
+    
+    console.log(`[AI Filter] Kept ${validIds.length} out of ${subsidies.length} items.`);
+    
+    // Filter the original list
+    return subsidies.filter(s => validIds.includes(s.id));
+
+  } catch (error) {
+    console.error("AI Region Filtering Failed:", error);
+    // Fallback: If AI fails, return original list to prevent empty screen.
+    return subsidies; 
+  }
+};
+
 /**
  * Fetches the list of subsidies based on selected sources.
  */
-export const fetchSubsidies = async (key: string, sources: SubsidySource[]): Promise<Subsidy[]> => {
+export const fetchSubsidies = async (key: string, sources: SubsidySource[], profile?: UserProfile): Promise<Subsidy[]> => {
   try {
+    // Avoid double encoding if key is already encoded (common in Korean APIs)
     const serviceKey = key.includes('%') ? key : encodeURIComponent(key);
     const subsidies: Subsidy[] = [];
     const promises = [];
 
+    // Generate Filter Parameters
+    let filterParams = '';
+    if (profile) {
+        const lifeArray = getLifeArrayCode(profile.age, profile.hasChildren);
+        const intrsThemaArray = getInterestCodes(profile.interests);
+        
+        if (lifeArray) filterParams += `&lifeArray=${lifeArray}`;
+        if (intrsThemaArray) filterParams += `&intrsThemaArray=${intrsThemaArray}`;
+        
+        console.log(`[API Query] Filter Params: ${filterParams}`);
+    }
+
     // 1. Central API List Call
     if (sources.includes('Central')) {
       // Request: /NationalWelfarelistV001?callTp=L&...
-      // Increased numOfRows to 100 as requested
-      const centralUrl = `${CENTRAL_BASE_URL}/NationalWelfarelistV001?serviceKey=${serviceKey}&callTp=L&pageNo=1&numOfRows=100&srchKeyCode=001&onapPsbltYn=Y&orderBy=popular`;
+      const centralUrl = `${CENTRAL_BASE_URL}/NationalWelfarelistV001?serviceKey=${serviceKey}&callTp=L&pageNo=1&numOfRows=100&srchKeyCode=001&onapPsbltYn=Y&orderBy=popular${filterParams}`;
       promises.push(
         fetch(centralUrl)
           .then(res => res.text())
@@ -100,8 +251,7 @@ export const fetchSubsidies = async (key: string, sources: SubsidySource[]): Pro
     // 2. Local API List Call
     if (sources.includes('Local')) {
       // Request: /LcgvWelfarelist?... 
-      // Increased numOfRows to 100 as requested
-      const localUrl = `${LOCAL_BASE_URL}/LcgvWelfarelist?serviceKey=${serviceKey}&pageNo=1&numOfRows=100`;
+      const localUrl = `${LOCAL_BASE_URL}/LcgvWelfarelist?serviceKey=${serviceKey}&pageNo=1&numOfRows=100${filterParams}`;
       promises.push(
         fetch(localUrl)
           .then(res => res.text())
@@ -146,7 +296,17 @@ export const fetchSubsidies = async (key: string, sources: SubsidySource[]): Pro
     }
 
     await Promise.all(promises);
-    return subsidies;
+
+    // Post-processing: Filter Local subsidies by region using AI
+    // Only if we have a user region, an API key (for Gemini), and there are local subsidies to filter
+    const centralSubsidies = subsidies.filter(s => s.provider === 'Central');
+    let localSubsidies = subsidies.filter(s => s.provider === 'Local');
+
+    if (profile?.region && key && localSubsidies.length > 0) {
+        localSubsidies = await filterLocalSubsidiesByRegion(localSubsidies, profile.region, key);
+    }
+
+    return [...centralSubsidies, ...localSubsidies];
 
   } catch (error) {
     console.error("API Fetch Error:", error);
@@ -184,37 +344,73 @@ export const fetchSubsidyDetail = async (id: string, provider: 'Central' | 'Loca
         if (!dtl) throw new Error('No detail data found');
 
         // Parse fields based on the specific XML examples provided
-        // Central uses: tgtrDtlCn, slctCritCn, alwServCn
-        // Local uses: sprtTrgtCn, slctCritCn, alwServCn (Need to handle potential differences)
-        
         const supportContent = cleanContent(getTagValue(dtl, 'alwServCn')); // 급여내용
         const selectionCriteria = cleanContent(getTagValue(dtl, 'slctCritCn')); // 선정기준
+        const targetDetail = cleanContent(getTagValue(dtl, 'tgtrDtlCn') || getTagValue(dtl, 'sprtTrgtCn'));
+        const purpose = cleanContent(getTagValue(dtl, 'wlfareInfoOutlCn')); // 사업개요/목적
+        const competentOrg = cleanContent(getTagValue(dtl, 'jurMnofNm')); // 담당부서 
         
-        // Target Detail might differ by API
-        const targetDetail = cleanContent(getTagValue(dtl, 'tgtrDtlCn') || getTagValue(dtl, 'sprtTrgtCn')); 
-        
-        // Try to extract contact info
-        const inqplCtadrList = dtl.getElementsByTagName('inqplCtadrList');
+        // Extract contact info summary
+        const inqplCtadrNodes = dtl.getElementsByTagName('inqplCtadrList');
         let contactInfo = '';
-        if (inqplCtadrList.length > 0) {
-            contactInfo = getTagValue(inqplCtadrList[0], 'servSeDetailNm') || getTagValue(inqplCtadrList[0], 'wlfareInfoReldNm');
-            const phone = getTagValue(inqplCtadrList[0], 'servSeDetailLink') || getTagValue(inqplCtadrList[0], 'wlfareInfoReldCn');
+        if (inqplCtadrNodes.length > 0) {
+            contactInfo = getTagValue(inqplCtadrNodes[0], 'servSeDetailNm') || getTagValue(inqplCtadrNodes[0], 'wlfareInfoReldNm');
+            const phone = getTagValue(inqplCtadrNodes[0], ['servSeDetailLink', 'wlfareInfoReldCn']);
             if (phone) contactInfo += ` (${phone})`;
         }
 
-        // Extract documents (infer from content or look for basfrmList)
+        // Specific Key Mapping for Robust Extraction
+        
+        // 1. Contacts (Phone/Address)
+        // Usually Name is servSeDetailNm, Value is servSeDetailLink (containing phone number)
+        const contacts = getListValues(dtl, 'inqplCtadrList', 
+            ['servSeDetailNm', 'wlfareInfoReldNm'], 
+            ['servSeDetailLink', 'wlfareInfoReldCn']
+        );
+        
+        // 2. Websites
+        const relatedWebsites = getListValues(dtl, 'inqplHmpgReldList', 
+            ['servSeDetailNm', 'wlfareInfoReldNm'], 
+            ['servSeDetailLink', 'wlfareInfoReldCn']
+        );
+
+        // 3. Legal Bases
+        // Usually Name is servSeDetailNm or lawNm, URL might be servSeDetailLink or reldBylwLink
+        const legalBases = getListValues(dtl, 'baslawList', 
+            ['servSeDetailNm', 'lawNm', 'reldBylwNm'], 
+            ['servSeDetailLink', 'reldBylwLink']
+        );
+
+        // 4. Reference Files
+        const referenceFiles = getListValues(dtl, 'basfrmList', 
+            ['servSeDetailNm', 'fileNm'], 
+            ['servSeDetailLink', 'fileUrl']
+        );
+
+        // 5. Application Steps (Timeline)
+        const applmetListRaw = getListValues(dtl, 'applmetList', ['servSeDetailNm'], ['servSeDetailLink']);
+        const steps: SubsidyStep[] = applmetListRaw.map((item, index) => ({
+            order: index + 1,
+            title: mapStepTitle(item.name),
+            description: cleanContent(item.url), // getListValues maps value/link to .url property
+            isDone: false
+        }));
+
         const documents: string[] = [];
-        if (selectionCriteria.includes('신분증')) documents.push('신분증');
-        if (selectionCriteria.includes('통장')) documents.push('통장사본');
-        if (selectionCriteria.includes('소득')) documents.push('소득증빙서류');
-        if (documents.length === 0) documents.push('상세 모집공고 참조');
 
         return {
             supportContent,
             selectionCriteria,
             targetDetail,
+            purpose,
+            competentOrg,
             contactInfo,
             documents,
+            contacts,
+            relatedWebsites,
+            legalBases,
+            referenceFiles,
+            steps: steps.length > 0 ? steps : undefined,
             isDetailFetched: true
         };
 
@@ -229,7 +425,6 @@ const checkError = (doc: Document, context: string) => {
     const resultMsg = getTagValue(doc, 'resultMsg');
     
     // Code 0, 00, 200 are generally success. 
-    // Code 40 or 03 often means No Data (not necessarily an error).
     if (resultCode === '00' || resultCode === '0' || resultCode === '200' || resultMsg === 'SUCCESS' || resultMsg === 'OK') {
         return;
     }

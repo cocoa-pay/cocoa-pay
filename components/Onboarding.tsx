@@ -1,14 +1,16 @@
+
 import React, { useState } from 'react';
 import { Region, InterestTag, UserProfile } from '../types';
 import { REGIONS, INTERESTS } from '../constants';
-import { Check, ChevronRight, User, MapPin, Wallet, Heart, Settings } from 'lucide-react';
+import { Check, ChevronRight, User, MapPin, Wallet, Heart, Settings, HelpCircle } from 'lucide-react';
 
 interface OnboardingProps {
   onComplete: (profile: UserProfile) => void;
   onOpenSettings: () => void;
+  onOpenAbout: () => void;
 }
 
-const Onboarding: React.FC<OnboardingProps> = ({ onComplete, onOpenSettings }) => {
+const Onboarding: React.FC<OnboardingProps> = ({ onComplete, onOpenSettings, onOpenAbout }) => {
   const [step, setStep] = useState(1);
   const [profile, setProfile] = useState<UserProfile>({
     age: 28,
@@ -43,14 +45,23 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete, onOpenSettings }) =
 
   return (
     <div className="max-w-lg mx-auto bg-white min-h-screen md:min-h-[600px] md:rounded-3xl md:shadow-xl md:my-8 p-6 flex flex-col relative overflow-hidden">
-      {/* Settings Button for API Key */}
-      <button 
-        onClick={onOpenSettings}
-        className="absolute top-6 right-6 p-2 text-gray-300 hover:text-kakao-brown transition-colors z-20"
-        title="API 설정"
-      >
-        <Settings className="w-6 h-6" />
-      </button>
+      {/* Header Buttons */}
+      <div className="absolute top-6 right-6 flex space-x-2 z-20">
+        <button 
+          onClick={onOpenAbout}
+          className="p-2 text-gray-300 hover:text-kakao-brown transition-colors"
+          title="서비스 소개"
+        >
+          <HelpCircle className="w-6 h-6" />
+        </button>
+        <button 
+          onClick={onOpenSettings}
+          className="p-2 text-gray-300 hover:text-kakao-brown transition-colors"
+          title="API 설정"
+        >
+          <Settings className="w-6 h-6" />
+        </button>
+      </div>
 
       <div className="flex-1 z-10">
         <h1 className="text-2xl font-bold text-kakao-brown mb-2 pr-8">
